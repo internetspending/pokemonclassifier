@@ -5,6 +5,9 @@
 ## Motivation
 We aim to classify a Pokémon’s **primary type** (18 classes) from an image using transfer learning with a pretrained CNN.
 
+## Dataset access link
+https://www.kaggle.com/datasets/vishalsubbiah/pokemon-images-and-types?select=pokemon.csv
+
 ## Problem
 Given a Pokémon image, predict its primary type (e.g., Fire, Water, Electric) using learned visual features.
 
