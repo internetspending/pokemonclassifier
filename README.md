@@ -29,8 +29,21 @@ Given a Pokémon image, predict its primary type (e.g., Fire, Water, Electric) u
 - `reports/` figures + results
 
 ## Setup
-1. Create env and install deps
-2. Download dataset into `data/`
+1. Create a virtual environment and install dependencies:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   ```
+2. Download the dataset from the [Kaggle link above](https://www.kaggle.com/datasets/vishalsubbiah/pokemon-images-and-types?select=pokemon.csv) and place the files so the structure looks like:
+   ```
+   data/
+   ├── pokemon.csv
+   └── images/
+       ├── bulbasaur.png
+       ├── charmander.png
+       └── ...
+   ```
 3. Train
 4. Evaluate
 
