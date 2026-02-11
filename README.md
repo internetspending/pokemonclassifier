@@ -23,8 +23,6 @@ Given a Pokémon image, predict its primary type (e.g., Fire, Water, Electric) u
 
 ## Repo Structure
 - `data/` dataset (not tracked)
-  - `unprocessed/` raw downloaded images
-  - `processed/` train/val/test splits
 - `classifiers/` model implementations
   - `pytorch/` PyTorch-based classifiers
   - `tensorflow/` TensorFlow-based classifiers

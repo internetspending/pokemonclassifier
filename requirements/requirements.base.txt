@@ -3,3 +3,6 @@ numpy
 tqdm
 scikit-learn
 matplotlib
+kagglehub
+pandas
+python-dotenv
