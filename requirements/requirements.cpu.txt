@@ -1,0 +1,4 @@
+-r requirements.base.txt
+torch
+torchvision
+torchaudio

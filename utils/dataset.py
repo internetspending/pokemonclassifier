@@ -4,7 +4,7 @@ import pandas as pd
 from PIL import Image
 from torch.utils.data import Dataset
 
-from src.utils.preprocessing import get_transform
+from utils.preprocessing import get_transform
 
 
 class PokemonDataset(Dataset):
