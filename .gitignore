@@ -14,7 +14,13 @@ venv/
 .idea/
 
 # Data / models (keep out of git)
-data/
+data/*
+!data/processed/
+!data/unprocessed/
+data/processed/*
+data/unprocessed/*
+!data/processed/.gitkeep
+!data/unprocessed/.gitkeep
 models/
 *.pt
 *.pth

@@ -22,18 +22,27 @@ Given a Pokémon image, predict its primary type (e.g., Fire, Water, Electric) u
 - Train/val/test split: 70/10/20
 
 ## Repo Structure
-- `src/` training/eval code
-- `notebooks/` experiments/EDA
 - `data/` dataset (not tracked)
-- `models/` saved checkpoints (not tracked)
-- `reports/` figures + results
+  - `unprocessed/` raw downloaded images
+  - `processed/` train/val/test splits
+- `classifiers/` model implementations
+  - `pytorch/` PyTorch-based classifiers
+  - `tensorflow/` TensorFlow-based classifiers
+  - `baseline/` baseline models + EDA
+- `evaluations/` evaluation code + results
+- `utils/` shared utilities (dataset, preprocessing)
+- `scripts/` helper scripts
+- `requirements/` dependency files (base, cpu, cu126)
 
 ## Setup
 1. Create a virtual environment and install dependencies:
    ```bash
    python -m venv venv
    source venv/bin/activate
-   pip install -r requirements.txt
+   # For CPU-only:
+   pip install -r requirements/requirements.cpu.txt
+   # For CUDA 12.6:
+   pip install -r requirements/requirements.cu126.txt
    ```
 2. Download the dataset from the [Kaggle link above](https://www.kaggle.com/datasets/vishalsubbiah/pokemon-images-and-types?select=pokemon.csv) and place the files so the structure looks like:
    ```
@@ -46,7 +55,3 @@ Given a Pokémon image, predict its primary type (e.g., Fire, Water, Electric) u
    ```
 3. Train
 4. Evaluate
-
-## Commands (example)
-- Train: `python -m src.training.train`
-- Eval:  `python -m src.evaluation.eval`
