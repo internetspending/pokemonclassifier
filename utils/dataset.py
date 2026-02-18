@@ -10,9 +10,9 @@ from utils.preprocessing import get_transform
 class PokemonDataset(Dataset):
     """PyTorch Dataset for Pokemon images and their primary type labels."""
 
-    def __init__(self, data_dir, transform=None):
+    def __init__(self, data_dir, train=False, transform=None):
         self.data_dir = data_dir
-        self.transform = transform or get_transform()
+        self.transform = transform or get_transform(train=train)
 
         df = pd.read_csv(os.path.join(data_dir, "pokemon.csv"))
 

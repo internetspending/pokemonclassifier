@@ -57,7 +57,10 @@ def split_dataset(dataset, seed=42):
         trainval_idx, test_size=0.125, random_state=seed, stratify=trainval_labels
     )
 
-    return Subset(dataset, train_idx), Subset(dataset, val_idx), Subset(dataset, test_idx)
+    train_dataset = PokemonDataset(data_dir=dataset.data_dir, train=True)
+    val_test_dataset = PokemonDataset(data_dir=dataset.data_dir, train=False)
+
+    return Subset(train_dataset, train_idx), Subset(val_test_dataset, val_idx), Subset(val_test_dataset, test_idx)
 
 
 def build_model(num_classes=18):
@@ -186,7 +189,7 @@ def main():
     print(f"Device: {device}")
 
     # Load dataset and split
-    dataset = PokemonDataset(data_dir=args.data_dir)
+    dataset = PokemonDataset(data_dir=args.data_dir, train=False)
     train_set, val_set, test_set = split_dataset(dataset, seed=args.seed)
     print(f"Split: {len(train_set)} train / {len(val_set)} val / {len(test_set)} test")
     print(f"Classes ({len(dataset.label_names)}): {dataset.label_names}")
