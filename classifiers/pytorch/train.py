@@ -37,6 +37,8 @@ def parse_args():
     p.add_argument("--phase2-epochs", type=int, default=10)
     p.add_argument("--phase1-lr", type=float, default=1e-3)
     p.add_argument("--phase2-lr", type=float, default=1e-4)
+    p.add_argument("--weight-decay", type=float, default=1e-4)
+    p.add_argument("--dropout", type=float, default=0.3)
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
 
@@ -63,12 +65,15 @@ def split_dataset(dataset, seed=42):
     return Subset(train_dataset, train_idx), Subset(val_test_dataset, val_idx), Subset(val_test_dataset, test_idx)
 
 
-def build_model(num_classes=18):
+def build_model(num_classes=18, dropout=0.3):
     """Load pretrained EfficientNet-B0 and replace the classifier head."""
     weights = EfficientNet_B0_Weights.DEFAULT
     model = efficientnet_b0(weights=weights)
     in_features = model.classifier[1].in_features
-    model.classifier[1] = nn.Linear(in_features, num_classes)
+    model.classifier = nn.Sequential(
+        nn.Dropout(p=dropout),
+        nn.Linear(in_features, num_classes),
+    )
     return model
 
 
@@ -199,7 +204,7 @@ def main():
     test_loader = DataLoader(test_set, batch_size=args.batch_size)
 
     # Build model
-    model = build_model(num_classes=len(dataset.label_names)).to(device)
+    model = build_model(num_classes=len(dataset.label_names), dropout=args.dropout).to(device)
     criterion = nn.CrossEntropyLoss()
     best_f1 = 0.0
     ckpt_path = os.path.join(args.output_dir, "best_pokemon_classifier.pt")
@@ -210,6 +215,7 @@ def main():
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=args.phase1_lr,
+        weight_decay=args.weight_decay,
     )
 
     for epoch in range(1, args.phase1_epochs + 1):
@@ -232,6 +238,7 @@ def main():
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=args.phase2_lr,
+        weight_decay=args.weight_decay,
     )
 
     for epoch in range(1, args.phase2_epochs + 1):
