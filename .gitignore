@@ -24,3 +24,4 @@ models/
 reports/**/*.png
 reports/**/*.jpg
 reports/**/*.csv
+experiments
