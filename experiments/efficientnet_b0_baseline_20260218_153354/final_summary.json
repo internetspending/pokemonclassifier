@@ -1,0 +1,33 @@
+{
+    "experiment_name": "efficientnet_b0_baseline",
+    "timestamp": "20260218_153354",
+    "description": "Testing baseline model",
+    "config": {
+        "model_architecture": "efficientnet_b0",
+        "pretrained": true,
+        "num_classes": 18,
+        "phase1_epochs": 5,
+        "phase2_epochs": 5,
+        "total_epochs": 10,
+        "batch_size": 32,
+        "phase1_lr": 0.001,
+        "phase2_lr": 0.0001,
+        "train_size": 566,
+        "val_size": 81,
+        "test_size": 162,
+        "train_split": 0.7,
+        "val_split": 0.1,
+        "test_split": 0.2,
+        "seed": 42,
+        "device": "cpu"
+    },
+    "best_val_f1": 0.225462281510109,
+    "total_epochs": 10,
+    "final_metrics": {
+        "train_loss": 1.147886542465156,
+        "train_f1": 0.7472325161801996,
+        "val_loss": 2.2688491388603493,
+        "val_f1": 0.2151417688003054,
+        "val_top5_acc": 0.6790123456790124
+    }
+}

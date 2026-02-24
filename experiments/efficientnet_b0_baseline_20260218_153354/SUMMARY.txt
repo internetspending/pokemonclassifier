@@ -1,0 +1,38 @@
+============================================================
+EXPERIMENT SUMMARY: efficientnet_b0_baseline
+============================================================
+
+Timestamp: 20260218_153354
+Description: Testing baseline model
+
+Total Epochs: 10
+Best Validation F1: 0.2255
+
+Final Metrics:
+----------------------------------------
+train_loss: 1.1479
+train_f1: 0.7472
+val_loss: 2.2688
+val_f1: 0.2151
+val_top5_acc: 0.6790
+
+============================================================
+Configuration:
+============================================================
+model_architecture: efficientnet_b0
+pretrained: True
+num_classes: 18
+phase1_epochs: 5
+phase2_epochs: 5
+total_epochs: 10
+batch_size: 32
+phase1_lr: 0.001
+phase2_lr: 0.0001
+train_size: 566
+val_size: 81
+test_size: 162
+train_split: 0.7
+val_split: 0.1
+test_split: 0.2
+seed: 42
+device: cpu
