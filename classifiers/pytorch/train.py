@@ -46,6 +46,11 @@ def parse_args():
     p.add_argument("--phase2-epochs", type=int, default=10)
     p.add_argument("--phase1-lr", type=float, default=1e-3)
     p.add_argument("--phase2-lr", type=float, default=1e-4)
+    p.add_argument("--weight-decay", type=float, default=1e-4)
+    p.add_argument("--dropout", type=float, default=0.3)
+    p.add_argument("--unfreeze-blocks", type=int, default=2)
+    p.add_argument("--patience", type=int, default=5)
+    p.add_argument("--label-smoothing", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=42)
     
     # Experiment tracking arguments
@@ -61,7 +66,7 @@ def parse_args():
 
 def split_dataset(dataset, seed=42):
     """Stratified 70/10/20 train/val/test split."""
-    labels = [label for _, label in dataset.samples]
+    labels = [type1_idx for _, type1_idx, _ in dataset.samples]
     indices = list(range(len(dataset)))
 
     # 80% train+val, 20% test
@@ -78,12 +83,15 @@ def split_dataset(dataset, seed=42):
     return Subset(dataset, train_idx), Subset(dataset, val_idx), Subset(dataset, test_idx)
 
 
-def build_model(num_classes=18):
+def build_model(num_classes=18, dropout=0.3):
     """Load pretrained EfficientNet-B0 and replace the classifier head."""
     weights = EfficientNet_B0_Weights.DEFAULT
     model = efficientnet_b0(weights=weights)
     in_features = model.classifier[1].in_features
-    model.classifier[1] = nn.Linear(in_features, num_classes)
+    model.classifier[1] = nn.Sequential(
+        nn.Dropout(p=dropout),
+        nn.Linear(in_features, num_classes),
+    )
     return model
 
 
@@ -120,8 +128,26 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
         all_labels.extend(labels.cpu().tolist())
 
     avg_loss = running_loss / len(loader.dataset)
-    macro_f1 = f1_score(all_labels, all_preds, average="macro")
+    macro_f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
     return avg_loss, macro_f1
+
+
+@torch.inference_mode()
+def dual_type_topk_accuracy(model, subset, full_dataset, device, k=1):
+    """
+    Top-k accuracy where a hit is counted if ANY of the top-k predictions
+    matches type1 OR type2 for that Pokemon.
+    """
+    model.eval()
+    correct = 0
+    for orig_idx in subset.indices:
+        img, _ = full_dataset[orig_idx]
+        valid = full_dataset.valid_labels(orig_idx)
+        logits = model(img.unsqueeze(0).to(device))
+        topk_preds = logits.topk(k, dim=1).indices[0].tolist()
+        if any(p in valid for p in topk_preds):
+            correct += 1
+    return correct / len(subset.indices)
 
 
 @torch.inference_mode()
@@ -213,6 +239,8 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(args.seed)
     print(f"Device: {device}")
+    if device == "cuda":
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
 
     # ========================================
     # INITIALIZE EXPERIMENT TRACKER
@@ -231,6 +259,7 @@ def main():
     train_set, val_set, test_set = split_dataset(dataset, seed=args.seed)
     print(f"Split: {len(train_set)} train / {len(val_set)} val / {len(test_set)} test")
     print(f"Classes ({len(dataset.label_names)}): {dataset.label_names}")
+    print(f"Regularization: dropout={args.dropout}  weight_decay={args.weight_decay}  label_smoothing={args.label_smoothing}  unfreeze_blocks={args.unfreeze_blocks}  patience={args.patience}")
 
     train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_set, batch_size=args.batch_size)
@@ -252,6 +281,12 @@ def main():
         'batch_size': args.batch_size,
         'phase1_lr': args.phase1_lr,
         'phase2_lr': args.phase2_lr,
+        'weight_decay': args.weight_decay,
+        'dropout': args.dropout,
+        'unfreeze_blocks': args.unfreeze_blocks,
+        'patience': args.patience,
+        'label_smoothing': args.label_smoothing,
+        'optimizer': 'Adam',
         
         # Data settings
         'train_size': len(train_set),
@@ -270,9 +305,9 @@ def main():
         tracker.log_config(config)
     
     # Build model
-    model = build_model(num_classes=len(dataset.label_names)).to(device)
-    criterion = nn.CrossEntropyLoss()
-    best_f1 = 0.0
+    model = build_model(num_classes=len(dataset.label_names), dropout=args.dropout).to(device)
+    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    best_val_acc = 0.0
     ckpt_path = os.path.join(args.output_dir, "best_pokemon_classifier.pt")
 
     # ── Phase 1: Frozen backbone ──
@@ -281,6 +316,7 @@ def main():
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=args.phase1_lr,
+        weight_decay=args.weight_decay,
     )
     
     global_epoch = 0  # Track overall epoch number for logging
@@ -290,11 +326,11 @@ def main():
         
         train_loss, train_f1 = train_one_epoch(model, train_loader, criterion, optimizer, device)
         val_loss, val_f1, val_top5_acc = validate(model, val_loader, criterion, device)
+        val_dual_acc = dual_type_topk_accuracy(model, val_set, dataset, device, k=1)
 
-        print(f"[Phase1 {epoch}/{args.phase1_epochs}] "
-              f"train_loss={train_loss:.4f} train_f1={train_f1:.4f} | "
-              f"val_loss={val_loss:.4f} val_f1={val_f1:.4f} | "
-              f"val_top5_acc={val_top5_acc:.4f}")
+        print(f"[Phase1 {epoch:>2}/{args.phase1_epochs}]  "
+              f"loss={train_loss:.4f}  train_f1={train_f1:.4f}  "
+              f"val_acc(dual-type)={val_dual_acc:.4f}  val_f1={val_f1:.4f}")
 
         # ========================================
         # LOG METRICS TO TRACKER
@@ -310,34 +346,38 @@ def main():
                 learning_rate=args.phase1_lr
             )
 
-        if val_f1 > best_f1:
-            best_f1 = val_f1
+        if val_dual_acc > best_val_acc:
+            best_val_acc = val_dual_acc
             save_checkpoint(model, dataset.label_names, ckpt_path,
-                            extra={"phase": 1, "epoch": epoch, "val_f1": val_f1})
-            print(f"  -> Saved best checkpoint (val_f1={val_f1:.4f})")
-            
+                            extra={"phase": 1, "epoch": epoch, "val_acc": val_dual_acc})
+            print(f"             ^ new best — checkpoint saved")
+
             # Save checkpoint to tracker too
             if tracker:
-                tracker.save_checkpoint(model, optimizer, global_epoch, val_f1, is_best=True)
+                tracker.save_checkpoint(model, optimizer, global_epoch, val_dual_acc, is_best=True)
 
     # ── Phase 2: Fine-tune upper layers ──
     print("\n=== Phase 2: Fine-tune upper layers ===")
-    unfreeze_upper_layers(model, num_blocks_to_unfreeze=3)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
+    model.load_state_dict(ckpt["model_state_dict"])
+    unfreeze_upper_layers(model, num_blocks_to_unfreeze=args.unfreeze_blocks)
     optimizer = torch.optim.Adam(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=args.phase2_lr,
+        weight_decay=args.weight_decay,
     )
 
+    epochs_without_improvement = 0
     for epoch in range(1, args.phase2_epochs + 1):
         global_epoch += 1
-        
+
         train_loss, train_f1 = train_one_epoch(model, train_loader, criterion, optimizer, device)
         val_loss, val_f1, val_top5_acc = validate(model, val_loader, criterion, device)
+        val_dual_acc = dual_type_topk_accuracy(model, val_set, dataset, device, k=1)
 
-        print(f"[Phase2 {epoch}/{args.phase2_epochs}] "
-              f"train_loss={train_loss:.4f} train_f1={train_f1:.4f} | "
-              f"val_loss={val_loss:.4f} val_f1={val_f1:.4f} | "
-              f"val_top5_acc={val_top5_acc:.4f}")
+        print(f"[Phase2 {epoch:>2}/{args.phase2_epochs}]  "
+              f"loss={train_loss:.4f}  train_f1={train_f1:.4f}  "
+              f"val_acc(dual-type)={val_dual_acc:.4f}  val_f1={val_f1:.4f}")
 
         # ========================================
         # LOG METRICS TO TRACKER
@@ -353,38 +393,59 @@ def main():
                 learning_rate=args.phase2_lr
             )
 
-        if val_f1 > best_f1:
-            best_f1 = val_f1
+        if val_dual_acc > best_val_acc:
+            best_val_acc = val_dual_acc
+            epochs_without_improvement = 0
             save_checkpoint(model, dataset.label_names, ckpt_path,
-                            extra={"phase": 2, "epoch": epoch, "val_f1": val_f1})
-            print(f"  -> Saved best checkpoint (val_f1={val_f1:.4f})")
-            
+                            extra={"phase": 2, "epoch": epoch, "val_acc": val_dual_acc})
+            print(f"             ^ new best — checkpoint saved")
+
             # Save checkpoint to tracker too
             if tracker:
-                tracker.save_checkpoint(model, optimizer, global_epoch, val_f1, is_best=True)
+                tracker.save_checkpoint(model, optimizer, global_epoch, val_dual_acc, is_best=True)
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= args.patience:
+                print(f"             Early stopping (no improvement for {args.patience} epochs)")
+                break
 
     # ── Test Evaluation ──
     print("\n=== Test Set Evaluation (best checkpoint) ===")
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
     model.load_state_dict(ckpt["model_state_dict"])
-    test_f1, test_topk = evaluate_test(model, test_loader, device, dataset.label_names)
+    model.eval()
 
-    print(f"\nBest val F1: {best_f1:.4f}")
+    top1 = dual_type_topk_accuracy(model, test_set, dataset, device, k=1)
+    top3 = dual_type_topk_accuracy(model, test_set, dataset, device, k=3)
+    top5 = dual_type_topk_accuracy(model, test_set, dataset, device, k=5)
+
+    all_preds, all_labels = [], []
+    with torch.inference_mode():
+        for orig_idx in test_set.indices:
+            img, label = dataset[orig_idx]
+            logits = model(img.unsqueeze(0).to(device))
+            all_preds.append(logits.argmax(dim=1).item())
+            all_labels.append(label)
+    test_f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
+
+    print(f"  Top-1 accuracy (dual-type): {top1:.4f}")
+    print(f"  Top-3 accuracy (dual-type): {top3:.4f}")
+    print(f"  Top-5 accuracy (dual-type): {top5:.4f}")
+    print(f"  Macro F1 (vs type1):        {test_f1:.4f}")
+    print(f"\nBest val accuracy: {best_val_acc:.4f}")
     print(f"Checkpoint saved to: {ckpt_path}")
 
     # ========================================
     # SAVE FINAL SUMMARY
     # ========================================
-    #run python train.py --experiment-name "my_first_tracked_experiment"
     if tracker:
-        # Log test metrics to the final summary manually
         tracker.metrics['test_f1'] = [test_f1]
-        tracker.metrics['test_top1_acc'] = [test_topk[1]]
-        tracker.metrics['test_top3_acc'] = [test_topk[3]]
-        tracker.metrics['test_top5_acc'] = [test_topk[5]]
-        
+        tracker.metrics['test_top1_acc'] = [top1]
+        tracker.metrics['test_top3_acc'] = [top3]
+        tracker.metrics['test_top5_acc'] = [top5]
+
         tracker.save_final_summary()
-        
+
         print(f"\n[TRACKING] All results saved to: {tracker.get_experiment_path()}")
         print(f"[TRACKING] View plots at: {tracker.get_experiment_path()}/plots/")
 
