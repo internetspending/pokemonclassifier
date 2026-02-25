@@ -86,6 +86,7 @@ def step_smoke_test(dataset):
 
     # Inference on a real sample from the dataset
     img, label = dataset[0]
+    valid = dataset.valid_labels(0)
     x = img.unsqueeze(0).to(device)
     print(f"[INFO] Input shape: {tuple(x.shape)}")
 
@@ -94,13 +95,16 @@ def step_smoke_test(dataset):
 
     print(f"[OK] Output shape: {tuple(logits.shape)}")
 
-    # Top-5 predictions
+    # Top-5 predictions (a hit counts if the predicted type matches type1 OR type2)
     probs = torch.softmax(logits, dim=1)[0]
     topk = torch.topk(probs, k=min(5, NUM_CLASSES))
-    true_name = dataset.label_names[label]
-    print(f"[OK] Top-5 predictions (true type: {true_name}):")
+    true_names = " / ".join(dataset.label_names[i] for i in sorted(valid))
+    top1_idx = topk.indices[0].item()
+    hit = top1_idx in valid
+    print(f"[OK] Top-5 predictions (true type(s): {true_names}) — top-1: {'HIT' if hit else 'MISS'}:")
     for idx, p in zip(topk.indices.tolist(), topk.values.tolist()):
-        print(f"     {dataset.label_names[idx]:>10}  {p:.4f}")
+        marker = " <--" if idx in valid else ""
+        print(f"     {dataset.label_names[idx]:>10}  {p:.4f}{marker}")
 
 
 def main():

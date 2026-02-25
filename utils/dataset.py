@@ -25,13 +25,28 @@ class PokemonDataset(Dataset):
         for _, row in df.iterrows():
             img_path = os.path.join(data_dir, "images", f"{row['Name']}.png")
             if os.path.exists(img_path):
-                self.samples.append((img_path, self._label_to_idx[row["Type1"]]))
+                type1_idx = self._label_to_idx[row["Type1"]]
+                type2_raw = row.get("Type2")
+                type2_idx = (
+                    self._label_to_idx[type2_raw]
+                    if pd.notna(type2_raw) and type2_raw in self._label_to_idx
+                    else None
+                )
+                self.samples.append((img_path, type1_idx, type2_idx))
 
     def __len__(self):
         return len(self.samples)
 
+    def valid_labels(self, idx):
+        """Return the set of valid type indices for sample `idx` (type1 always, type2 when present)."""
+        _, type1_idx, type2_idx = self.samples[idx]
+        labels = {type1_idx}
+        if type2_idx is not None:
+            labels.add(type2_idx)
+        return labels
+
     def __getitem__(self, idx):
-        img_path, label = self.samples[idx]
+        img_path, type1_idx, _ = self.samples[idx]
         img = Image.open(img_path)
         img = self.transform(img)
-        return img, label
+        return img, type1_idx
