@@ -27,6 +27,7 @@ from sklearn.metrics import f1_score
 from tqdm import tqdm
 
 from utils.dataset import PokemonDataset
+from utils.preprocessing import get_train_transform, get_val_transform
 
 # Import the experiment tracker
 try:
@@ -52,6 +53,10 @@ def parse_args():
     p.add_argument("--patience", type=int, default=5)
     p.add_argument("--label-smoothing", type=float, default=0.0)
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--augment", action="store_true", default=True,
+                   help="Apply online augmentation to the training set (default: True)")
+    p.add_argument("--no-augment", dest="augment", action="store_false",
+                   help="Disable online augmentation")
     
     # Experiment tracking arguments
     p.add_argument("--experiment-name", default="pokemon_classifier_training",
@@ -64,8 +69,8 @@ def parse_args():
     return p.parse_args()
 
 
-def split_dataset(dataset, seed=42):
-    """Stratified 70/10/20 train/val/test split."""
+def get_split_indices(dataset, seed=42):
+    """Stratified 70/10/20 split — returns index lists, not Subsets."""
     labels = [type1_idx for _, type1_idx, _ in dataset.samples]
     indices = list(range(len(dataset)))
 
@@ -80,7 +85,29 @@ def split_dataset(dataset, seed=42):
         trainval_idx, test_size=0.125, random_state=seed, stratify=trainval_labels
     )
 
-    return Subset(dataset, train_idx), Subset(dataset, val_idx), Subset(dataset, test_idx)
+    return train_idx, val_idx, test_idx
+
+
+def build_datasets(data_dir, seed=42, use_augmentation=True):
+    """
+    Load and split the dataset, applying train/val transforms correctly.
+
+    Returns (train_set, val_set, test_set, eval_dataset) where eval_dataset
+    is the full no-augmentation dataset needed for dual_type_topk_accuracy.
+    """
+    # eval_dataset has no augmentation — used for val, test, and dual-type eval
+    eval_dataset = PokemonDataset(data_dir=data_dir, transform=get_val_transform())
+    train_idx, val_idx, test_idx = get_split_indices(eval_dataset, seed=seed)
+
+    if use_augmentation:
+        train_dataset = PokemonDataset(data_dir=data_dir, transform=get_train_transform())
+    else:
+        train_dataset = eval_dataset
+
+    train_set = Subset(train_dataset, train_idx)
+    val_set = Subset(eval_dataset, val_idx)
+    test_set = Subset(eval_dataset, test_idx)
+    return train_set, val_set, test_set, eval_dataset
 
 
 def build_model(num_classes=18, dropout=0.3):
@@ -254,10 +281,12 @@ def main():
         print(f"[TRACKING] Experiment: {args.experiment_name}")
         print(f"[TRACKING] Results will be saved to: {tracker.get_experiment_path()}")
     
-    # Load dataset and split
-    dataset = PokemonDataset(data_dir=args.data_dir)
-    train_set, val_set, test_set = split_dataset(dataset, seed=args.seed)
+    # Load dataset and split — train set gets augmentation, val/test do not
+    train_set, val_set, test_set, dataset = build_datasets(
+        data_dir=args.data_dir, seed=args.seed, use_augmentation=args.augment
+    )
     print(f"Split: {len(train_set)} train / {len(val_set)} val / {len(test_set)} test")
+    print(f"Online augmentation: {'enabled' if args.augment else 'disabled'}")
     print(f"Classes ({len(dataset.label_names)}): {dataset.label_names}")
     print(f"Regularization: dropout={args.dropout}  weight_decay={args.weight_decay}  label_smoothing={args.label_smoothing}  unfreeze_blocks={args.unfreeze_blocks}  patience={args.patience}")
 
@@ -289,6 +318,7 @@ def main():
         'optimizer': 'Adam',
         
         # Data settings
+        'augmentation': args.augment,
         'train_size': len(train_set),
         'val_size': len(val_set),
         'test_size': len(test_set),
@@ -366,6 +396,10 @@ def main():
         lr=args.phase2_lr,
         weight_decay=args.weight_decay,
     )
+    # Halve LR when val hasn't improved for 3 epochs; floor at 1e-6
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="max", patience=3, factor=0.5, min_lr=1e-6
+    )
 
     epochs_without_improvement = 0
     for epoch in range(1, args.phase2_epochs + 1):
@@ -375,9 +409,12 @@ def main():
         val_loss, val_f1, val_top5_acc = validate(model, val_loader, criterion, device)
         val_dual_acc = dual_type_topk_accuracy(model, val_set, dataset, device, k=1)
 
+        current_lr = optimizer.param_groups[0]["lr"]
+        scheduler.step(val_dual_acc)
+
         print(f"[Phase2 {epoch:>2}/{args.phase2_epochs}]  "
               f"loss={train_loss:.4f}  train_f1={train_f1:.4f}  "
-              f"val_acc(dual-type)={val_dual_acc:.4f}  val_f1={val_f1:.4f}")
+              f"val_acc(dual-type)={val_dual_acc:.4f}  val_f1={val_f1:.4f}  lr={current_lr:.2e}")
 
         # ========================================
         # LOG METRICS TO TRACKER
@@ -390,7 +427,7 @@ def main():
                 val_loss=val_loss,
                 val_f1=val_f1,
                 val_top5_acc=val_top5_acc,
-                learning_rate=args.phase2_lr
+                learning_rate=current_lr
             )
 
         if val_dual_acc > best_val_acc:
