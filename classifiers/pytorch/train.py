@@ -1,14 +1,19 @@
 """
-Train EfficientNet-B0 on the Pokemon type classification task with experiment tracking.
+Train EfficientNet-B0 on Pokemon type classification with ANTI-OVERFITTING strategies.
 
-Two-phase transfer learning:
-  Phase 1 — Freeze backbone, train only the classifier head.
-  Phase 2 — Unfreeze upper backbone layers and fine-tune.
+Improvements over baseline:
+  - Strong data augmentation (RandomResizedCrop, ColorJitter, RandomRotation, etc.)
+  - Class-balanced sampling to handle imbalanced dataset
+  - Label smoothing for regularization
+  - Dropout in classifier head
+  - Weight decay (L2 regularization)
+  - Learning rate scheduling with warm restarts
+  - Early stopping to prevent overfitting
+  - Mixup augmentation (optional)
 
 Usage:
-    python classifiers/pytorch/train.py
-    python classifiers/pytorch/train.py --phase1-epochs 5 --phase2-epochs 5
-    python classifiers/pytorch/train.py --experiment-name "efficientnet_b0_baseline" --description "Testing baseline model"
+    python classifiers/pytorch/train_improved.py
+    python classifiers/pytorch/train_improved.py --augmentation strong --dropout 0.5
 """
 
 import argparse
@@ -20,11 +25,15 @@ sys.path.insert(0, PROJECT_ROOT)
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Subset
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Subset, WeightedRandomSampler
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
+from torchvision import transforms
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score
 from tqdm import tqdm
+import numpy as np
+from collections import Counter
 
 from utils.dataset import PokemonDataset
 
@@ -38,25 +47,107 @@ except ImportError:
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Train Pokemon type classifier")
+    p = argparse.ArgumentParser(description="Train Pokemon type classifier with anti-overfitting")
     p.add_argument("--data-dir", default=os.path.join(PROJECT_ROOT, "data"))
     p.add_argument("--output-dir", default=os.path.join(PROJECT_ROOT, "models"))
     p.add_argument("--batch-size", type=int, default=32)
-    p.add_argument("--phase1-epochs", type=int, default=10)
-    p.add_argument("--phase2-epochs", type=int, default=10)
-    p.add_argument("--phase1-lr", type=float, default=1e-3)
-    p.add_argument("--phase2-lr", type=float, default=1e-4)
+    p.add_argument("--epochs", type=int, default=50, help="Total training epochs")
+    p.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    p.add_argument("--weight-decay", type=float, default=0.01, help="Weight decay (L2 regularization)")
+    p.add_argument("--dropout", type=float, default=0.5, help="Dropout rate in classifier head")
+    p.add_argument("--label-smoothing", type=float, default=0.1, help="Label smoothing factor")
     p.add_argument("--seed", type=int, default=42)
     
+    # Augmentation options
+    p.add_argument("--augmentation", choices=["none", "light", "strong"], default="strong",
+                   help="Data augmentation strength")
+    p.add_argument("--mixup-alpha", type=float, default=0.0,
+                   help="Mixup alpha (0 to disable, 0.2-0.4 recommended)")
+    
+    # Training strategy
+    p.add_argument("--freeze-epochs", type=int, default=5,
+                   help="Number of epochs to train with frozen backbone")
+    p.add_argument("--class-balanced", action="store_true",
+                   help="Use class-balanced sampling")
+    p.add_argument("--early-stopping-patience", type=int, default=15,
+                   help="Early stopping patience (0 to disable)")
+    p.add_argument("--scheduler", choices=["none", "cosine", "plateau"], default="cosine",
+                   help="Learning rate scheduler")
+    
     # Experiment tracking arguments
-    p.add_argument("--experiment-name", default="pokemon_classifier_training",
-                   help="Name for this experiment (used in tracking)")
+    p.add_argument("--experiment-name", default="pokemon_improved",
+                   help="Name for this experiment")
     p.add_argument("--description", default=None,
-                   help="Description of what you're testing in this experiment")
+                   help="Description of what you're testing")
     p.add_argument("--no-tracking", action="store_true",
                    help="Disable experiment tracking")
     
     return p.parse_args()
+
+
+def get_augmentation_transforms(augmentation_type="strong", is_training=True):
+    """Get data augmentation transforms based on augmentation strength."""
+    
+    # Common normalization (ImageNet stats)
+    normalize = transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+    
+    # Lambda to ensure RGB (handles RGBA images)
+    ensure_rgb = transforms.Lambda(lambda img: img.convert('RGB') if img.mode != 'RGB' else img)
+    
+    if not is_training:
+        # Validation/test transforms (no augmentation)
+        return transforms.Compose([
+            ensure_rgb,  # Convert to RGB first
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            normalize
+        ])
+    
+    # Training transforms with augmentation
+    if augmentation_type == "none":
+        return transforms.Compose([
+            ensure_rgb,  # Convert to RGB first
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            normalize
+        ])
+    
+    elif augmentation_type == "light":
+        return transforms.Compose([
+            ensure_rgb,  # Convert to RGB first
+            transforms.Resize(256),
+            transforms.RandomCrop(224),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.ToTensor(),
+            normalize
+        ])
+    
+    elif augmentation_type == "strong":
+        return transforms.Compose([
+            ensure_rgb,  # Convert to RGB first
+            transforms.RandomResizedCrop(224, scale=(0.7, 1.0)),
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.RandomRotation(15),
+            transforms.ColorJitter(
+                brightness=0.3,
+                contrast=0.3,
+                saturation=0.3,
+                hue=0.1
+            ),
+            transforms.RandomAffine(
+                degrees=0,
+                translate=(0.1, 0.1),
+                scale=(0.9, 1.1)
+            ),
+            transforms.RandomPerspective(distortion_scale=0.2, p=0.3),
+            transforms.ToTensor(),
+            normalize
+        ])
 
 
 def split_dataset(dataset, seed=42):
@@ -75,16 +166,74 @@ def split_dataset(dataset, seed=42):
         trainval_idx, test_size=0.125, random_state=seed, stratify=trainval_labels
     )
 
-    return Subset(dataset, train_idx), Subset(dataset, val_idx), Subset(dataset, test_idx)
+    return train_idx, val_idx, test_idx
 
 
-def build_model(num_classes=18):
-    """Load pretrained EfficientNet-B0 and replace the classifier head."""
-    weights = EfficientNet_B0_Weights.DEFAULT
-    model = efficientnet_b0(weights=weights)
-    in_features = model.classifier[1].in_features
-    model.classifier[1] = nn.Linear(in_features, num_classes)
-    return model
+def get_class_weights(dataset, indices):
+    """Calculate class weights for balanced sampling."""
+    labels = [dataset.samples[i][1] for i in indices]
+    class_counts = Counter(labels)
+    
+    # Calculate weights (inverse frequency)
+    total = len(labels)
+    num_classes = len(class_counts)
+    class_weights = {cls: total / (num_classes * count) for cls, count in class_counts.items()}
+    
+    # Create sample weights
+    sample_weights = [class_weights[label] for label in labels]
+    
+    return sample_weights, class_counts
+
+
+class ImprovedClassifier(nn.Module):
+    """EfficientNet-B0 with improved classifier head."""
+    
+    def __init__(self, num_classes=18, dropout=0.5):
+        super().__init__()
+        
+        # Load pretrained backbone
+        weights = EfficientNet_B0_Weights.DEFAULT
+        efficientnet = efficientnet_b0(weights=weights)
+        
+        # Extract feature extractor
+        self.features = efficientnet.features
+        self.avgpool = efficientnet.avgpool
+        
+        # Get feature dimension
+        in_features = efficientnet.classifier[1].in_features
+        
+        # Improved classifier head with dropout
+        self.classifier = nn.Sequential(
+            nn.Dropout(p=dropout, inplace=True),
+            nn.Linear(in_features, num_classes)
+        )
+    
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
+
+def mixup_data(x, y, alpha=0.2):
+    """Apply mixup augmentation."""
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1
+
+    batch_size = x.size()[0]
+    index = torch.randperm(batch_size).to(x.device)
+
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    return mixed_x, y_a, y_b, lam
+
+
+def mixup_criterion(criterion, pred, y_a, y_b, lam):
+    """Mixup loss calculation."""
+    return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
 
 
 def freeze_backbone(model):
@@ -93,31 +242,45 @@ def freeze_backbone(model):
         param.requires_grad = False
 
 
-def unfreeze_upper_layers(model, num_blocks_to_unfreeze=3):
-    """Unfreeze the last N blocks of the backbone."""
-    total_blocks = len(model.features)
-    for i in range(total_blocks - num_blocks_to_unfreeze, total_blocks):
-        for param in model.features[i].parameters():
-            param.requires_grad = True
+def unfreeze_backbone(model):
+    """Unfreeze all backbone layers."""
+    for param in model.features.parameters():
+        param.requires_grad = True
 
 
-def train_one_epoch(model, loader, criterion, optimizer, device):
-    """Run one training epoch. Returns (avg_loss, macro_f1)."""
+def train_one_epoch(model, loader, criterion, optimizer, device, use_mixup=False, mixup_alpha=0.2):
+    """Run one training epoch with optional mixup."""
     model.train()
     running_loss = 0.0
     all_preds, all_labels = [], []
 
     for images, labels in tqdm(loader, desc="  train", leave=False):
         images, labels = images.to(device), labels.to(device)
-        optimizer.zero_grad()
-        logits = model(images)
-        loss = criterion(logits, labels)
-        loss.backward()
-        optimizer.step()
+        
+        # Apply mixup if enabled
+        if use_mixup and mixup_alpha > 0:
+            images, labels_a, labels_b, lam = mixup_data(images, labels, mixup_alpha)
+            
+            optimizer.zero_grad()
+            logits = model(images)
+            loss = mixup_criterion(criterion, logits, labels_a, labels_b, lam)
+            loss.backward()
+            optimizer.step()
+            
+            running_loss += loss.item() * images.size(0)
+            # For mixup, use the dominant label for metrics
+            all_preds.extend(logits.argmax(dim=1).cpu().tolist())
+            all_labels.extend(labels_a.cpu().tolist())
+        else:
+            optimizer.zero_grad()
+            logits = model(images)
+            loss = criterion(logits, labels)
+            loss.backward()
+            optimizer.step()
 
-        running_loss += loss.item() * images.size(0)
-        all_preds.extend(logits.argmax(dim=1).cpu().tolist())
-        all_labels.extend(labels.cpu().tolist())
+            running_loss += loss.item() * images.size(0)
+            all_preds.extend(logits.argmax(dim=1).cpu().tolist())
+            all_labels.extend(labels.cpu().tolist())
 
     avg_loss = running_loss / len(loader.dataset)
     macro_f1 = f1_score(all_labels, all_preds, average="macro")
@@ -154,49 +317,43 @@ def validate(model, loader, criterion, device):
     return avg_loss, macro_f1, top5_acc
 
 
-@torch.inference_mode()
-def topk_accuracy(model, loader, device, ks=(1, 3, 5)):
-    """Compute top-k accuracy for the given k values."""
-    model.eval()
-    correct = {k: 0 for k in ks}
-    total = 0
-
-    for images, labels in loader:
-        images, labels = images.to(device), labels.to(device)
-        logits = model(images)
-        for k in ks:
-            top_k_preds = logits.topk(k, dim=1).indices
-            correct[k] += (top_k_preds == labels.unsqueeze(1)).any(dim=1).sum().item()
-        total += labels.size(0)
-
-    return {k: correct[k] / total for k in ks}
-
-
-def evaluate_test(model, test_loader, device, label_names):
-    """Full test set evaluation: macro F1 + top-k accuracy."""
-    model.eval()
-    all_preds, all_labels = [], []
-
-    with torch.inference_mode():
-        for images, labels in tqdm(test_loader, desc="  test", leave=False):
-            images, labels = images.to(device), labels.to(device)
-            logits = model(images)
-            all_preds.extend(logits.argmax(dim=1).cpu().tolist())
-            all_labels.extend(labels.cpu().tolist())
-
-    macro_f1 = f1_score(all_labels, all_preds, average="macro")
-    topk = topk_accuracy(model, test_loader, device)
-
-    print(f"  Macro F1:       {macro_f1:.4f}")
-    print(f"  Top-1 Accuracy: {topk[1]:.4f}")
-    print(f"  Top-3 Accuracy: {topk[3]:.4f}")
-    print(f"  Top-5 Accuracy: {topk[5]:.4f}")
+class EarlyStopping:
+    """Early stopping to stop training when validation metric stops improving."""
     
-    return macro_f1, topk
+    def __init__(self, patience=10, min_delta=0.001, mode='max'):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+    
+    def __call__(self, score):
+        if self.best_score is None:
+            self.best_score = score
+            return False
+        
+        if self.mode == 'max':
+            if score > self.best_score + self.min_delta:
+                self.best_score = score
+                self.counter = 0
+            else:
+                self.counter += 1
+        else:  # mode == 'min'
+            if score < self.best_score - self.min_delta:
+                self.best_score = score
+                self.counter = 0
+            else:
+                self.counter += 1
+        
+        if self.counter >= self.patience:
+            self.early_stop = True
+        
+        return self.early_stop
 
 
 def save_checkpoint(model, label_names, path, extra=None):
-    """Save model checkpoint with label metadata."""
+    """Save model checkpoint."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     state = {
         "model_state_dict": model.state_dict(),
@@ -214,9 +371,7 @@ def main():
     torch.manual_seed(args.seed)
     print(f"Device: {device}")
 
-    # ========================================
-    # INITIALIZE EXPERIMENT TRACKER
-    # ========================================
+    # Initialize experiment tracker
     tracker = None
     if TRACKER_AVAILABLE and not args.no_tracking:
         tracker = ExperimentTracker(
@@ -226,167 +381,235 @@ def main():
         print(f"[TRACKING] Experiment: {args.experiment_name}")
         print(f"[TRACKING] Results will be saved to: {tracker.get_experiment_path()}")
     
-    # Load dataset and split
-    dataset = PokemonDataset(data_dir=args.data_dir)
-    train_set, val_set, test_set = split_dataset(dataset, seed=args.seed)
-    print(f"Split: {len(train_set)} train / {len(val_set)} val / {len(test_set)} test")
-    print(f"Classes ({len(dataset.label_names)}): {dataset.label_names}")
-
-    train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
+    # Load dataset with appropriate transforms
+    print("\n=== Loading Dataset ===")
+    base_dataset = PokemonDataset(data_dir=args.data_dir)
+    train_idx, val_idx, test_idx = split_dataset(base_dataset, seed=args.seed)
+    
+    # Calculate class distribution
+    sample_weights, class_counts = get_class_weights(base_dataset, train_idx)
+    print(f"\nClass distribution in training set:")
+    for cls, count in sorted(class_counts.items()):
+        print(f"  Class {cls}: {count} samples")
+    
+    print(f"\nSplit: {len(train_idx)} train / {len(val_idx)} val / {len(test_idx)} test")
+    print(f"Classes ({len(base_dataset.label_names)}): {base_dataset.label_names}")
+    
+    # Create datasets with transforms
+    train_transform = get_augmentation_transforms(args.augmentation, is_training=True)
+    val_transform = get_augmentation_transforms(args.augmentation, is_training=False)
+    
+    # Apply transforms to datasets
+    train_dataset = PokemonDataset(data_dir=args.data_dir, transform=train_transform)
+    val_dataset = PokemonDataset(data_dir=args.data_dir, transform=val_transform)
+    test_dataset = PokemonDataset(data_dir=args.data_dir, transform=val_transform)
+    
+    train_set = Subset(train_dataset, train_idx)
+    val_set = Subset(val_dataset, val_idx)
+    test_set = Subset(test_dataset, test_idx)
+    
+    # Create data loaders with optional class balancing
+    if args.class_balanced:
+        print("\n[INFO] Using class-balanced sampling")
+        sampler = WeightedRandomSampler(
+            weights=sample_weights,
+            num_samples=len(sample_weights),
+            replacement=True
+        )
+        train_loader = DataLoader(train_set, batch_size=args.batch_size, sampler=sampler)
+    else:
+        train_loader = DataLoader(train_set, batch_size=args.batch_size, shuffle=True)
+    
     val_loader = DataLoader(val_set, batch_size=args.batch_size)
     test_loader = DataLoader(test_set, batch_size=args.batch_size)
 
-    # ========================================
-    # LOG CONFIGURATION TO TRACKER
-    # ========================================
+    # Log configuration
     config = {
-        # Model settings
         'model_architecture': 'efficientnet_b0',
-        'pretrained': True,
-        'num_classes': len(dataset.label_names),
-        
-        # Training settings
-        'phase1_epochs': args.phase1_epochs,
-        'phase2_epochs': args.phase2_epochs,
-        'total_epochs': args.phase1_epochs + args.phase2_epochs,
+        'dropout': args.dropout,
+        'label_smoothing': args.label_smoothing,
+        'weight_decay': args.weight_decay,
+        'learning_rate': args.lr,
         'batch_size': args.batch_size,
-        'phase1_lr': args.phase1_lr,
-        'phase2_lr': args.phase2_lr,
-        
-        # Data settings
-        'train_size': len(train_set),
-        'val_size': len(val_set),
-        'test_size': len(test_set),
-        'train_split': 0.7,
-        'val_split': 0.1,
-        'test_split': 0.2,
-        
-        # Other
+        'epochs': args.epochs,
+        'freeze_epochs': args.freeze_epochs,
+        'augmentation': args.augmentation,
+        'mixup_alpha': args.mixup_alpha,
+        'class_balanced': args.class_balanced,
+        'scheduler': args.scheduler,
+        'early_stopping_patience': args.early_stopping_patience,
         'seed': args.seed,
-        'device': device,
+        'num_classes': len(base_dataset.label_names),
+        'train_size': len(train_idx),
+        'val_size': len(val_idx),
+        'test_size': len(test_idx),
     }
     
     if tracker:
         tracker.log_config(config)
     
-    # Build model
-    model = build_model(num_classes=len(dataset.label_names)).to(device)
-    criterion = nn.CrossEntropyLoss()
-    best_f1 = 0.0
-    ckpt_path = os.path.join(args.output_dir, "best_pokemon_classifier.pt")
-
-    # ── Phase 1: Frozen backbone ──
-    print("\n=== Phase 1: Train classifier head (backbone frozen) ===")
-    freeze_backbone(model)
-    optimizer = torch.optim.Adam(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=args.phase1_lr,
+    # Build model with dropout
+    print(f"\n=== Building Model ===")
+    print(f"Dropout: {args.dropout}")
+    print(f"Label Smoothing: {args.label_smoothing}")
+    print(f"Weight Decay: {args.weight_decay}")
+    print(f"Augmentation: {args.augmentation}")
+    
+    model = ImprovedClassifier(
+        num_classes=len(base_dataset.label_names),
+        dropout=args.dropout
+    ).to(device)
+    
+    # Loss function with label smoothing
+    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    
+    # Optimizer with weight decay
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay
     )
     
-    global_epoch = 0  # Track overall epoch number for logging
-
-    for epoch in range(1, args.phase1_epochs + 1):
-        global_epoch += 1
-        
-        train_loss, train_f1 = train_one_epoch(model, train_loader, criterion, optimizer, device)
+    # Learning rate scheduler
+    scheduler = None
+    if args.scheduler == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer, T_0=10, T_mult=2, eta_min=1e-6
+        )
+        print(f"Using Cosine Annealing scheduler")
+    elif args.scheduler == "plateau":
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='max', factor=0.5, patience=5, min_lr=1e-6
+        )
+        print(f"Using ReduceLROnPlateau scheduler")
+    
+    # Early stopping
+    early_stopping = None
+    if args.early_stopping_patience > 0:
+        early_stopping = EarlyStopping(patience=args.early_stopping_patience, mode='max')
+        print(f"Using early stopping with patience={args.early_stopping_patience}")
+    
+    best_val_f1 = 0.0
+    ckpt_path = os.path.join(args.output_dir, "best_pokemon_classifier_improved.pt")
+    
+    # Phase 1: Train with frozen backbone
+    if args.freeze_epochs > 0:
+        print(f"\n=== Phase 1: Training with frozen backbone ({args.freeze_epochs} epochs) ===")
+        freeze_backbone(model)
+    
+        for epoch in range(1, args.freeze_epochs + 1):
+            train_loss, train_f1 = train_one_epoch(
+                model, train_loader, criterion, optimizer, device,
+                use_mixup=(args.mixup_alpha > 0), mixup_alpha=args.mixup_alpha
+            )
+            val_loss, val_f1, val_top5_acc = validate(model, val_loader, criterion, device)
+            
+            current_lr = optimizer.param_groups[0]['lr']
+            
+            print(f"[Epoch {epoch}/{args.freeze_epochs}] "
+                  f"LR={current_lr:.2e} | "
+                  f"train_loss={train_loss:.4f} train_f1={train_f1:.4f} | "
+                  f"val_loss={val_loss:.4f} val_f1={val_f1:.4f} top5={val_top5_acc:.4f}")
+            
+            # Log to tracker
+            if tracker:
+                tracker.log_epoch_metrics(
+                    epoch=epoch,
+                    train_loss=train_loss,
+                    train_f1=train_f1,
+                    val_loss=val_loss,
+                    val_f1=val_f1,
+                    val_top5_acc=val_top5_acc,
+                    learning_rate=current_lr
+                )
+            
+            # Save best model
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
+                save_checkpoint(model, base_dataset.label_names, ckpt_path,
+                              extra={"epoch": epoch, "val_f1": val_f1})
+                print(f"  ✓ New best model! (val_f1={val_f1:.4f})")
+                
+                if tracker:
+                    tracker.save_checkpoint(model, optimizer, epoch, val_f1, is_best=True)
+            
+            # Update scheduler
+            if scheduler and args.scheduler == "cosine":
+                scheduler.step()
+    
+    # Phase 2: Fine-tune entire model
+    print(f"\n=== Phase 2: Fine-tuning entire model ({args.epochs - args.freeze_epochs} epochs) ===")
+    unfreeze_backbone(model)
+    
+    for epoch in range(args.freeze_epochs + 1, args.epochs + 1):
+        train_loss, train_f1 = train_one_epoch(
+            model, train_loader, criterion, optimizer, device,
+            use_mixup=(args.mixup_alpha > 0), mixup_alpha=args.mixup_alpha
+        )
         val_loss, val_f1, val_top5_acc = validate(model, val_loader, criterion, device)
-
-        print(f"[Phase1 {epoch}/{args.phase1_epochs}] "
+        
+        current_lr = optimizer.param_groups[0]['lr']
+        
+        print(f"[Epoch {epoch}/{args.epochs}] "
+              f"LR={current_lr:.2e} | "
               f"train_loss={train_loss:.4f} train_f1={train_f1:.4f} | "
-              f"val_loss={val_loss:.4f} val_f1={val_f1:.4f} | "
-              f"val_top5_acc={val_top5_acc:.4f}")
-
-        # ========================================
-        # LOG METRICS TO TRACKER
-        # ========================================
+              f"val_loss={val_loss:.4f} val_f1={val_f1:.4f} top5={val_top5_acc:.4f}")
+        
+        # Log to tracker
         if tracker:
             tracker.log_epoch_metrics(
-                epoch=global_epoch,
+                epoch=epoch,
                 train_loss=train_loss,
                 train_f1=train_f1,
                 val_loss=val_loss,
                 val_f1=val_f1,
                 val_top5_acc=val_top5_acc,
-                learning_rate=args.phase1_lr
+                learning_rate=current_lr
             )
-
-        if val_f1 > best_f1:
-            best_f1 = val_f1
-            save_checkpoint(model, dataset.label_names, ckpt_path,
-                            extra={"phase": 1, "epoch": epoch, "val_f1": val_f1})
-            print(f"  -> Saved best checkpoint (val_f1={val_f1:.4f})")
-            
-            # Save checkpoint to tracker too
-            if tracker:
-                tracker.save_checkpoint(model, optimizer, global_epoch, val_f1, is_best=True)
-
-    # ── Phase 2: Fine-tune upper layers ──
-    print("\n=== Phase 2: Fine-tune upper layers ===")
-    unfreeze_upper_layers(model, num_blocks_to_unfreeze=3)
-    optimizer = torch.optim.Adam(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=args.phase2_lr,
-    )
-
-    for epoch in range(1, args.phase2_epochs + 1):
-        global_epoch += 1
         
-        train_loss, train_f1 = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_f1, val_top5_acc = validate(model, val_loader, criterion, device)
-
-        print(f"[Phase2 {epoch}/{args.phase2_epochs}] "
-              f"train_loss={train_loss:.4f} train_f1={train_f1:.4f} | "
-              f"val_loss={val_loss:.4f} val_f1={val_f1:.4f} | "
-              f"val_top5_acc={val_top5_acc:.4f}")
-
-        # ========================================
-        # LOG METRICS TO TRACKER
-        # ========================================
-        if tracker:
-            tracker.log_epoch_metrics(
-                epoch=global_epoch,
-                train_loss=train_loss,
-                train_f1=train_f1,
-                val_loss=val_loss,
-                val_f1=val_f1,
-                val_top5_acc=val_top5_acc,
-                learning_rate=args.phase2_lr
-            )
-
-        if val_f1 > best_f1:
-            best_f1 = val_f1
-            save_checkpoint(model, dataset.label_names, ckpt_path,
-                            extra={"phase": 2, "epoch": epoch, "val_f1": val_f1})
-            print(f"  -> Saved best checkpoint (val_f1={val_f1:.4f})")
+        # Save best model
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
+            save_checkpoint(model, base_dataset.label_names, ckpt_path,
+                          extra={"epoch": epoch, "val_f1": val_f1})
+            print(f"  ✓ New best model! (val_f1={val_f1:.4f})")
             
-            # Save checkpoint to tracker too
             if tracker:
-                tracker.save_checkpoint(model, optimizer, global_epoch, val_f1, is_best=True)
-
-    # ── Test Evaluation ──
+                tracker.save_checkpoint(model, optimizer, epoch, val_f1, is_best=True)
+        
+        # Update scheduler
+        if scheduler:
+            if args.scheduler == "cosine":
+                scheduler.step()
+            elif args.scheduler == "plateau":
+                scheduler.step(val_f1)
+        
+        # Early stopping check
+        if early_stopping:
+            if early_stopping(val_f1):
+                print(f"\n[EARLY STOPPING] No improvement for {args.early_stopping_patience} epochs")
+                break
+    
+    # Test evaluation
     print("\n=== Test Set Evaluation (best checkpoint) ===")
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
     model.load_state_dict(ckpt["model_state_dict"])
-    test_f1, test_topk = evaluate_test(model, test_loader, device, dataset.label_names)
-
-    print(f"\nBest val F1: {best_f1:.4f}")
-    print(f"Checkpoint saved to: {ckpt_path}")
-
-    # ========================================
-    # SAVE FINAL SUMMARY
-    # ========================================
-    #run python train.py --experiment-name "my_first_tracked_experiment"
+    
+    test_loss, test_f1, test_top5_acc = validate(model, test_loader, criterion, device)
+    
+    print(f"\nFinal Results:")
+    print(f"  Best Val F1:  {best_val_f1:.4f}")
+    print(f"  Test F1:      {test_f1:.4f}")
+    print(f"  Test Top-5:   {test_top5_acc:.4f}")
+    print(f"\nCheckpoint saved to: {ckpt_path}")
+    
+    # Save final summary
     if tracker:
-        # Log test metrics to the final summary manually
         tracker.metrics['test_f1'] = [test_f1]
-        tracker.metrics['test_top1_acc'] = [test_topk[1]]
-        tracker.metrics['test_top3_acc'] = [test_topk[3]]
-        tracker.metrics['test_top5_acc'] = [test_topk[5]]
-        
+        tracker.metrics['test_top5_acc'] = [test_top5_acc]
         tracker.save_final_summary()
         
         print(f"\n[TRACKING] All results saved to: {tracker.get_experiment_path()}")
-        print(f"[TRACKING] View plots at: {tracker.get_experiment_path()}/plots/")
 
 
 if __name__ == "__main__":

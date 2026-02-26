@@ -25,4 +25,6 @@ reports/**/*.png
 reports/**/*.jpg
 reports/**/*.csv
 
-experiments/
+experiments/*
+!experiments/gen1_cpu_optimized_20260225_164245/
+!experiments/gen1_cpu_optimized_20260225_164245/**

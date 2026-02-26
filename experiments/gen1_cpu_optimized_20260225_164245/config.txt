@@ -1,0 +1,23 @@
+==================================================
+Experiment: gen1_cpu_optimized
+Timestamp: 20260225_164245
+==================================================
+
+model_architecture: efficientnet_b0
+dropout: 0.5
+label_smoothing: 0.1
+weight_decay: 0.01
+learning_rate: 0.0001
+batch_size: 64
+epochs: 25
+freeze_epochs: 3
+augmentation: light
+mixup_alpha: 0.0
+class_balanced: False
+scheduler: cosine
+early_stopping_patience: 15
+seed: 42
+num_classes: 15
+train_size: 7459
+val_size: 1066
+test_size: 2132

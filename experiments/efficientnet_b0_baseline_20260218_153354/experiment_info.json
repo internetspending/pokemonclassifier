@@ -1,6 +1,0 @@
-{
-    "experiment_name": "efficientnet_b0_baseline",
-    "timestamp": "20260218_153354",
-    "description": "Testing baseline model",
-    "experiment_directory": "experiments/efficientnet_b0_baseline_20260218_153354"
-}
