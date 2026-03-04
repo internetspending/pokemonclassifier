@@ -41,15 +41,22 @@ def get_split_indices(dataset, seed=42):
 
 
 def load_model(ckpt_path, num_classes, device):
-    weights = EfficientNet_B0_Weights.DEFAULT
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
+    state = ckpt["model_state_dict"]
+
     model = efficientnet_b0(weights=None)
     in_features = model.classifier[1].in_features
-    model.classifier[1] = nn.Sequential(
-        nn.Dropout(p=0.3),
-        nn.Linear(in_features, num_classes),
-    )
-    ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
-    model.load_state_dict(ckpt["model_state_dict"])
+
+    # Detect whether the checkpoint used a plain Linear or Sequential(Dropout, Linear)
+    if "classifier.1.1.weight" in state:
+        model.classifier[1] = nn.Sequential(
+            nn.Dropout(p=0.3),
+            nn.Linear(in_features, num_classes),
+        )
+    else:
+        model.classifier[1] = nn.Linear(in_features, num_classes)
+
+    model.load_state_dict(state)
     model.eval()
     return model.to(device)
 
