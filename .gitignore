@@ -15,10 +15,10 @@ venv/
 
 # Data / models (keep out of git)
 data/
-models/
-*.pt
-*.pth
-*.ckpt
+data_unseen_pokemon/
+models/*
+!models/best_pokemon_classifier_improved.pt
+!models/best_pokemon_classifier_improved.pt/**
 
 # Outputs
 reports/**/*.png
