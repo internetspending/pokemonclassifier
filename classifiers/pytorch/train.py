@@ -270,6 +270,9 @@ def generate_confusion_matrix(model, test_set, dataset, device, label_names, sav
     cm = confusion_matrix(all_labels, all_preds)
     cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
     
+    # Use actual shape of confusion matrix
+    n_rows, n_cols = cm.shape
+    
     # Plot
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(28, 12))
     
@@ -278,18 +281,18 @@ def generate_confusion_matrix(model, test_set, dataset, device, label_names, sav
     ax1.set_title('Normalized by True Label', fontsize=14, fontweight='bold')
     ax1.set_ylabel('True Label', fontsize=12, fontweight='bold')
     ax1.set_xlabel('Predicted Label', fontsize=12, fontweight='bold')
-    tick_marks = np.arange(len(label_names))
+    tick_marks = np.arange(n_rows)
     ax1.set_xticks(tick_marks)
     ax1.set_yticks(tick_marks)
-    ax1.set_xticklabels(label_names, rotation=45, ha='right')
-    ax1.set_yticklabels(label_names)
+    ax1.set_xticklabels(label_names[:n_rows], rotation=45, ha='right')
+    ax1.set_yticklabels(label_names[:n_rows])
     cbar1 = plt.colorbar(im1, ax=ax1)
     cbar1.set_label('Proportion', rotation=270, labelpad=20)
     
     # Add text annotations
     thresh = cm_normalized.max() / 2.
-    for i in range(len(label_names)):
-        for j in range(len(label_names)):
+    for i in range(n_rows):
+        for j in range(n_cols):
             color = 'white' if cm_normalized[i, j] > thresh else 'black'
             ax1.text(j, i, f'{cm_normalized[i, j]:.2f}',
                     ha='center', va='center', color=color, fontsize=9)
@@ -301,15 +304,15 @@ def generate_confusion_matrix(model, test_set, dataset, device, label_names, sav
     ax2.set_xlabel('Predicted Label', fontsize=12, fontweight='bold')
     ax2.set_xticks(tick_marks)
     ax2.set_yticks(tick_marks)
-    ax2.set_xticklabels(label_names, rotation=45, ha='right')
-    ax2.set_yticklabels(label_names)
+    ax2.set_xticklabels(label_names[:n_rows], rotation=45, ha='right')
+    ax2.set_yticklabels(label_names[:n_rows])
     cbar2 = plt.colorbar(im2, ax=ax2)
     cbar2.set_label('Count', rotation=270, labelpad=20)
     
     # Add text annotations
     thresh = cm.max() / 2.
-    for i in range(len(label_names)):
-        for j in range(len(label_names)):
+    for i in range(n_rows):
+        for j in range(n_cols):
             color = 'white' if cm[i, j] > thresh else 'black'
             ax2.text(j, i, f'{int(cm[i, j])}',
                     ha='center', va='center', color=color, fontsize=9)
