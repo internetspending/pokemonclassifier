@@ -12,8 +12,8 @@ Improvements over baseline:
   - Mixup augmentation (optional)
 
 Usage:
-    python classifiers/pytorch/train_improved.py
-    python classifiers/pytorch/train_improved.py --augmentation strong --dropout 0.5
+    python classifiers/pytorch/train.py
+    python classifiers/pytorch/train.py --augmentation strong --dropout 0.5
 """
 
 import argparse
