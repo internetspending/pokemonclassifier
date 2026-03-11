@@ -68,7 +68,9 @@ def parse_args():
                    help="Description of what you're testing in this experiment")
     p.add_argument("--no-tracking", action="store_true",
                    help="Disable experiment tracking")
-    
+    p.add_argument("--confusion-matrix", action="store_true",
+                   help="Generate confusion matrix after training")
+
     return p.parse_args()
 
 
@@ -549,9 +551,13 @@ def main():
     print(f"\nBest val accuracy: {best_val_acc:.4f}")
     print(f"Checkpoint saved to: {ckpt_path}")
 
-    # Generate confusion matrix
-    cm_save_path = os.path.join(args.output_dir, "confusion_matrix.png")
-    generate_confusion_matrix(model, test_set, dataset, device, dataset.label_names, cm_save_path)
+    # Generate confusion matrix (opt-in)
+    if args.confusion_matrix:
+        if tracker:
+            cm_save_path = os.path.join(tracker.get_experiment_path(), "plots", "confusion_matrix.png")
+        else:
+            cm_save_path = os.path.join(args.output_dir, "confusion_matrix.png")
+        generate_confusion_matrix(model, test_set, dataset, device, dataset.label_names, cm_save_path)
 
     # ========================================
     # SAVE FINAL SUMMARY
