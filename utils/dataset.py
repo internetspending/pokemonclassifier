@@ -26,13 +26,14 @@ class PokemonDataset(Dataset):
             img_path = os.path.join(data_dir, "images", f"{row['Name']}.png")
             if os.path.exists(img_path):
                 type1_idx = self._label_to_idx[row["Type1"]]
-                self.samples.append((img_path, type1_idx))
+                type2 = row["Type2"] if pd.notna(row.get("Type2")) else None
+                self.samples.append((img_path, type1_idx, type2))
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        img_path, type1_idx = self.samples[idx]
+        img_path, type1_idx, _ = self.samples[idx]
         img = Image.open(img_path)
         img = self.transform(img)
         return img, type1_idx

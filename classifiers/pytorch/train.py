@@ -236,8 +236,9 @@ def generate_confusion_matrix(model, test_set, dataset, device, label_names, sav
     all_labels = []
     
     # Get predictions
+    orig_indices = list(test_set.indices)
     with torch.inference_mode():
-        for orig_idx in test_set.indices:
+        for orig_idx in orig_indices:
             img, label = dataset[orig_idx]
             logits = model(img.unsqueeze(0).to(device))
             pred = logits.argmax(dim=1).item()
@@ -301,6 +302,15 @@ def generate_confusion_matrix(model, test_set, dataset, device, label_names, sav
     plt.close()
     
     print(f"\nConfusion matrix saved to: {save_path}")
+
+    # Dual-type miss analysis
+    misses = [i for i, (p, l) in enumerate(zip(all_preds, all_labels)) if p != l]
+    if misses:
+        dual_misses = sum(1 for i in misses if dataset.samples[orig_indices[i]][2] is not None)
+        single_misses = len(misses) - dual_misses
+        print(f"\nMisclassified: {len(misses)} total | "
+              f"{dual_misses} dual-typed ({dual_misses/len(misses)*100:.1f}%) | "
+              f"{single_misses} single-typed ({single_misses/len(misses)*100:.1f}%)")
 
 
 def save_checkpoint(model, label_names, path, extra=None):
