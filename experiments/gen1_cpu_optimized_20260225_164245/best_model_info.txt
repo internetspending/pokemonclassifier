@@ -1,0 +1,5 @@
+Best Model Checkpoint
+==================================================
+Epoch: 23
+Validation F1: 0.9313
+Checkpoint: experiments/gen1_cpu_optimized_20260225_164245/checkpoints/best_model.pth

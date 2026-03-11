@@ -1,8 +1,8 @@
 import os
 
+import pandas as pd
 from PIL import Image
 from torch.utils.data import Dataset
-import pandas as pd
 
 from utils.preprocessing import get_transform
 
