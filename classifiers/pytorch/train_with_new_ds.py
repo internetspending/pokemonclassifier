@@ -35,7 +35,7 @@ from tqdm import tqdm
 import numpy as np
 from collections import Counter
 
-from utils.dataset import PokemonDataset
+from utils.add_dataset import PokemonDataset
 
 # Import the experiment tracker
 try:
