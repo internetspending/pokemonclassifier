@@ -63,6 +63,16 @@ def get_offline_augmentation():
     ])
 
 
-# Backwards-compatible alias
+
 def get_transform(weights=None):
-    return get_val_transform(weights)
+    """
+    Preprocessing pipeline for EfficientNet-B0 pretrained weights.
+    - Keep RGBA->RGB fix
+    - Use weights.transforms() for correct resize/crop/normalize
+    """
+    weights = weights or EfficientNet_B0_Weights.DEFAULT
+    effnet_preprocess = weights.transforms()
+    return transforms.Compose([
+        RGBAToRGB(),
+        effnet_preprocess,
+    ])
