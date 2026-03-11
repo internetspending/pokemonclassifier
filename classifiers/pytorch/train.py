@@ -14,6 +14,9 @@ Usage:
 import argparse
 import os
 import sys
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
@@ -65,7 +68,9 @@ def parse_args():
                    help="Description of what you're testing in this experiment")
     p.add_argument("--no-tracking", action="store_true",
                    help="Disable experiment tracking")
-    
+    p.add_argument("--confusion-matrix", action="store_true",
+                   help="Generate confusion matrix after training")
+
     return p.parse_args()
 
 
@@ -246,6 +251,80 @@ def evaluate_test(model, test_loader, device, label_names):
     print(f"  Top-5 Accuracy: {topk[5]:.4f}")
     
     return macro_f1, topk
+
+
+def generate_confusion_matrix(model, test_set, dataset, device, label_names, save_path):
+    """Generate and save confusion matrix."""
+    model.eval()
+    all_preds = []
+    all_labels = []
+    
+    # Get predictions
+    with torch.inference_mode():
+        for orig_idx in test_set.indices:
+            img, label = dataset[orig_idx]
+            logits = model(img.unsqueeze(0).to(device))
+            pred = logits.argmax(dim=1).item()
+            all_preds.append(pred)
+            all_labels.append(label)
+    
+    # Generate confusion matrix
+    cm = confusion_matrix(all_labels, all_preds)
+    cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+    
+    # Use actual shape of confusion matrix
+    n_rows, n_cols = cm.shape
+    
+    # Plot
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(28, 12))
+    
+    # Normalized plot
+    im1 = ax1.imshow(cm_normalized, interpolation='nearest', cmap='Blues', aspect='auto')
+    ax1.set_title('Normalized by True Label', fontsize=14, fontweight='bold')
+    ax1.set_ylabel('True Label', fontsize=12, fontweight='bold')
+    ax1.set_xlabel('Predicted Label', fontsize=12, fontweight='bold')
+    tick_marks = np.arange(n_rows)
+    ax1.set_xticks(tick_marks)
+    ax1.set_yticks(tick_marks)
+    ax1.set_xticklabels(label_names[:n_rows], rotation=45, ha='right')
+    ax1.set_yticklabels(label_names[:n_rows])
+    cbar1 = plt.colorbar(im1, ax=ax1)
+    cbar1.set_label('Proportion', rotation=270, labelpad=20)
+    
+    # Add text annotations
+    thresh = cm_normalized.max() / 2.
+    for i in range(n_rows):
+        for j in range(n_cols):
+            color = 'white' if cm_normalized[i, j] > thresh else 'black'
+            ax1.text(j, i, f'{cm_normalized[i, j]:.2f}',
+                    ha='center', va='center', color=color, fontsize=9)
+    
+    # Raw counts plot
+    im2 = ax2.imshow(cm, interpolation='nearest', cmap='Greens', aspect='auto')
+    ax2.set_title('Raw Counts', fontsize=14, fontweight='bold')
+    ax2.set_ylabel('True Label', fontsize=12, fontweight='bold')
+    ax2.set_xlabel('Predicted Label', fontsize=12, fontweight='bold')
+    ax2.set_xticks(tick_marks)
+    ax2.set_yticks(tick_marks)
+    ax2.set_xticklabels(label_names[:n_rows], rotation=45, ha='right')
+    ax2.set_yticklabels(label_names[:n_rows])
+    cbar2 = plt.colorbar(im2, ax=ax2)
+    cbar2.set_label('Count', rotation=270, labelpad=20)
+    
+    # Add text annotations
+    thresh = cm.max() / 2.
+    for i in range(n_rows):
+        for j in range(n_cols):
+            color = 'white' if cm[i, j] > thresh else 'black'
+            ax2.text(j, i, f'{int(cm[i, j])}',
+                    ha='center', va='center', color=color, fontsize=9)
+    
+    plt.suptitle('Confusion Matrix - Pokemon Type Classification', fontsize=16, fontweight='bold')
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"\nConfusion matrix saved to: {save_path}")
 
 
 def save_checkpoint(model, label_names, path, extra=None):
@@ -471,6 +550,14 @@ def main():
     print(f"  Macro F1 (vs type1):        {test_f1:.4f}")
     print(f"\nBest val accuracy: {best_val_acc:.4f}")
     print(f"Checkpoint saved to: {ckpt_path}")
+
+    # Generate confusion matrix (opt-in)
+    if args.confusion_matrix:
+        if tracker:
+            cm_save_path = os.path.join(tracker.get_experiment_path(), "plots", "confusion_matrix.png")
+        else:
+            cm_save_path = os.path.join(args.output_dir, "confusion_matrix.png")
+        generate_confusion_matrix(model, test_set, dataset, device, dataset.label_names, cm_save_path)
 
     # ========================================
     # SAVE FINAL SUMMARY
