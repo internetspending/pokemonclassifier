@@ -76,7 +76,7 @@ def parse_args():
 
 def get_split_indices(dataset, seed=42):
     """Stratified 70/10/20 split — returns index lists, not Subsets."""
-    labels = [type1_idx for _, type1_idx, _ in dataset.samples]
+    labels = [type1_idx for _, type1_idx in dataset.samples]
     indices = list(range(len(dataset)))
 
     # 80% train+val, 20% test
@@ -94,25 +94,19 @@ def get_split_indices(dataset, seed=42):
 
 
 def build_datasets(data_dir, seed=42, use_augmentation=True):
-    """
-    Load and split the dataset, applying train/val transforms correctly.
-
-    Returns (train_set, val_set, test_set, eval_dataset) where eval_dataset
-    is the full no-augmentation dataset needed for dual_type_topk_accuracy.
-    """
-    # eval_dataset has no augmentation — used for val, test, and dual-type eval
-    eval_dataset = PokemonDataset(data_dir=data_dir, transform=get_val_transform())
-    train_idx, val_idx, test_idx = get_split_indices(eval_dataset, seed=seed)
+    """Load and split the dataset, applying train/val transforms correctly."""
+    val_dataset = PokemonDataset(data_dir=data_dir, transform=get_val_transform())
+    train_idx, val_idx, test_idx = get_split_indices(val_dataset, seed=seed)
 
     if use_augmentation:
         train_dataset = PokemonDataset(data_dir=data_dir, transform=get_train_transform())
     else:
-        train_dataset = eval_dataset
+        train_dataset = val_dataset
 
     train_set = Subset(train_dataset, train_idx)
-    val_set = Subset(eval_dataset, val_idx)
-    test_set = Subset(eval_dataset, test_idx)
-    return train_set, val_set, test_set, eval_dataset
+    val_set = Subset(val_dataset, val_idx)
+    test_set = Subset(val_dataset, test_idx)
+    return train_set, val_set, test_set, val_dataset
 
 
 def build_model(num_classes=18, dropout=0.3):
@@ -162,24 +156,6 @@ def train_one_epoch(model, loader, criterion, optimizer, device):
     avg_loss = running_loss / len(loader.dataset)
     macro_f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
     return avg_loss, macro_f1
-
-
-@torch.inference_mode()
-def dual_type_topk_accuracy(model, subset, full_dataset, device, k=1):
-    """
-    Top-k accuracy where a hit is counted if ANY of the top-k predictions
-    matches type1 OR type2 for that Pokemon.
-    """
-    model.eval()
-    correct = 0
-    for orig_idx in subset.indices:
-        img, _ = full_dataset[orig_idx]
-        valid = full_dataset.valid_labels(orig_idx)
-        logits = model(img.unsqueeze(0).to(device))
-        topk_preds = logits.topk(k, dim=1).indices[0].tolist()
-        if any(p in valid for p in topk_preds):
-            correct += 1
-    return correct / len(subset.indices)
 
 
 @torch.inference_mode()
@@ -360,7 +336,6 @@ def main():
         print(f"[TRACKING] Experiment: {args.experiment_name}")
         print(f"[TRACKING] Results will be saved to: {tracker.get_experiment_path()}")
     
-    # Load dataset and split — train set gets augmentation, val/test do not
     train_set, val_set, test_set, dataset = build_datasets(
         data_dir=args.data_dir, seed=args.seed, use_augmentation=args.augment
     )
@@ -435,15 +410,12 @@ def main():
         
         train_loss, train_f1 = train_one_epoch(model, train_loader, criterion, optimizer, device)
         val_loss, val_f1, val_top5_acc = validate(model, val_loader, criterion, device)
-        val_dual_acc = dual_type_topk_accuracy(model, val_set, dataset, device, k=1)
+        val_top1_acc = topk_accuracy(model, val_loader, device, ks=(1,))[1]
 
         print(f"[Phase1 {epoch:>2}/{args.phase1_epochs}]  "
               f"loss={train_loss:.4f}  train_f1={train_f1:.4f}  "
-              f"val_acc(dual-type)={val_dual_acc:.4f}  val_f1={val_f1:.4f}")
+              f"val_acc={val_top1_acc:.4f}  val_f1={val_f1:.4f}")
 
-        # ========================================
-        # LOG METRICS TO TRACKER
-        # ========================================
         if tracker:
             tracker.log_epoch_metrics(
                 epoch=global_epoch,
@@ -455,15 +427,14 @@ def main():
                 learning_rate=args.phase1_lr
             )
 
-        if val_dual_acc > best_val_acc:
-            best_val_acc = val_dual_acc
+        if val_top1_acc > best_val_acc:
+            best_val_acc = val_top1_acc
             save_checkpoint(model, dataset.label_names, ckpt_path,
-                            extra={"phase": 1, "epoch": epoch, "val_acc": val_dual_acc})
+                            extra={"phase": 1, "epoch": epoch, "val_acc": val_top1_acc})
             print(f"             ^ new best — checkpoint saved")
 
-            # Save checkpoint to tracker too
             if tracker:
-                tracker.save_checkpoint(model, optimizer, global_epoch, val_dual_acc, is_best=True)
+                tracker.save_checkpoint(model, optimizer, global_epoch, val_top1_acc, is_best=True)
 
     # ── Phase 2: Fine-tune upper layers ──
     print("\n=== Phase 2: Fine-tune upper layers ===")
@@ -486,18 +457,15 @@ def main():
 
         train_loss, train_f1 = train_one_epoch(model, train_loader, criterion, optimizer, device)
         val_loss, val_f1, val_top5_acc = validate(model, val_loader, criterion, device)
-        val_dual_acc = dual_type_topk_accuracy(model, val_set, dataset, device, k=1)
+        val_top1_acc = topk_accuracy(model, val_loader, device, ks=(1,))[1]
 
         current_lr = optimizer.param_groups[0]["lr"]
-        scheduler.step(val_dual_acc)
+        scheduler.step(val_top1_acc)
 
         print(f"[Phase2 {epoch:>2}/{args.phase2_epochs}]  "
               f"loss={train_loss:.4f}  train_f1={train_f1:.4f}  "
-              f"val_acc(dual-type)={val_dual_acc:.4f}  val_f1={val_f1:.4f}  lr={current_lr:.2e}")
+              f"val_acc={val_top1_acc:.4f}  val_f1={val_f1:.4f}  lr={current_lr:.2e}")
 
-        # ========================================
-        # LOG METRICS TO TRACKER
-        # ========================================
         if tracker:
             tracker.log_epoch_metrics(
                 epoch=global_epoch,
@@ -509,16 +477,15 @@ def main():
                 learning_rate=current_lr
             )
 
-        if val_dual_acc > best_val_acc:
-            best_val_acc = val_dual_acc
+        if val_top1_acc > best_val_acc:
+            best_val_acc = val_top1_acc
             epochs_without_improvement = 0
             save_checkpoint(model, dataset.label_names, ckpt_path,
-                            extra={"phase": 2, "epoch": epoch, "val_acc": val_dual_acc})
+                            extra={"phase": 2, "epoch": epoch, "val_acc": val_top1_acc})
             print(f"             ^ new best — checkpoint saved")
 
-            # Save checkpoint to tracker too
             if tracker:
-                tracker.save_checkpoint(model, optimizer, global_epoch, val_dual_acc, is_best=True)
+                tracker.save_checkpoint(model, optimizer, global_epoch, val_top1_acc, is_best=True)
         else:
             epochs_without_improvement += 1
             if epochs_without_improvement >= args.patience:
@@ -531,23 +498,8 @@ def main():
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
-    top1 = dual_type_topk_accuracy(model, test_set, dataset, device, k=1)
-    top3 = dual_type_topk_accuracy(model, test_set, dataset, device, k=3)
-    top5 = dual_type_topk_accuracy(model, test_set, dataset, device, k=5)
-
-    all_preds, all_labels = [], []
-    with torch.inference_mode():
-        for orig_idx in test_set.indices:
-            img, label = dataset[orig_idx]
-            logits = model(img.unsqueeze(0).to(device))
-            all_preds.append(logits.argmax(dim=1).item())
-            all_labels.append(label)
-    test_f1 = f1_score(all_labels, all_preds, average="macro", zero_division=0)
-
-    print(f"  Top-1 accuracy (dual-type): {top1:.4f}")
-    print(f"  Top-3 accuracy (dual-type): {top3:.4f}")
-    print(f"  Top-5 accuracy (dual-type): {top5:.4f}")
-    print(f"  Macro F1 (vs type1):        {test_f1:.4f}")
+    test_f1, topk = evaluate_test(model, test_loader, device, dataset.label_names)
+    top1, top3, top5 = topk[1], topk[3], topk[5]
     print(f"\nBest val accuracy: {best_val_acc:.4f}")
     print(f"Checkpoint saved to: {ckpt_path}")
 

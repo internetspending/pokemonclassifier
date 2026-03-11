@@ -1,0 +1,34 @@
+{
+    "experiment_name": "gen1_cpu_optimized",
+    "timestamp": "20260225_164245",
+    "description": null,
+    "config": {
+        "model_architecture": "efficientnet_b0",
+        "dropout": 0.5,
+        "label_smoothing": 0.1,
+        "weight_decay": 0.01,
+        "learning_rate": 0.0001,
+        "batch_size": 64,
+        "epochs": 25,
+        "freeze_epochs": 3,
+        "augmentation": "light",
+        "mixup_alpha": 0.0,
+        "class_balanced": false,
+        "scheduler": "cosine",
+        "early_stopping_patience": 15,
+        "seed": 42,
+        "num_classes": 15,
+        "train_size": 7459,
+        "val_size": 1066,
+        "test_size": 2132
+    },
+    "best_val_f1": 0.9312521737072521,
+    "total_epochs": 25,
+    "final_metrics": {
+        "train_loss": 0.661959968762002,
+        "train_f1": 0.9803219964257842,
+        "val_loss": 0.7830377738873909,
+        "val_f1": 0.9235624594847829,
+        "val_top5_acc": 0.9878048780487805
+    }
+}
