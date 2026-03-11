@@ -1,5 +1,0 @@
-Best Model Checkpoint
-==================================================
-Epoch: 9
-Validation F1: 0.2255
-Checkpoint: experiments/efficientnet_b0_baseline_20260218_153354/checkpoints/best_model.pth
